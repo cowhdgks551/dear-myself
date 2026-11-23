@@ -6,7 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#f5eee2">
 <title>Dear. Myself | 나에게 쓰는 편지</title>
-<meta name="app-version" content="2026-11-23-v3">
+<meta name="app-version" content="2026-11-23-v4">
 <style>
 :root{color-scheme:light;--ink:#554638;--muted:#927f6d;--paper:#fffdf8;--cream:#f5eee2;--line:#e9ddca;--accent:#9a7558;--gold:#c7a77c}
 *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 15% 10%,#fffaf0,transparent 35%),linear-gradient(135deg,#f2e8d9,#f8f3eb);color:var(--ink);font-family:"Noto Serif KR","Apple SD Gothic Neo",serif;min-height:100vh}
@@ -41,6 +41,8 @@ textarea:focus{border-color:var(--gold)}input{font:inherit}button{border:0;borde
 "use strict";
 const API="https://cjzwbnjqchtlguqwdlfo.supabase.co/functions/v1/dear-myself";
 const KEY="dearmyself_admin_token";
+const DRAFT_KEY="dearmyself_letter_draft_v1";
+const SUBMISSION_KEY="dearmyself_pending_submission_v1";
 const $=id=>document.getElementById(id);
 const token=()=>sessionStorage.getItem(KEY)||"";
 async function call(action,data={},adminMode=false){
@@ -51,21 +53,27 @@ async function call(action,data={},adminMode=false){
  if(!res.ok)throw new Error(out.error||"요청을 처리하지 못했습니다.");
  return out;
 }
+function saveDraft(){try{localStorage.setItem(DRAFT_KEY,JSON.stringify({answer1:$("a1").value,answer2:$("a2").value}));localStorage.removeItem(SUBMISSION_KEY);}catch{}}
+try{const draft=JSON.parse(localStorage.getItem(DRAFT_KEY)||"null");if(draft){$("a1").value=String(draft.answer1||"");$("a2").value=String(draft.answer2||"");}}catch{}
+$("a1").addEventListener("input",saveDraft);$("a2").addEventListener("input",saveDraft);
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+async function submitWithRetry(payload){let lastError;for(let attempt=0;attempt<3;attempt++){try{const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),12000);let response;try{response=await fetch(API,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"submit",...payload}),signal:controller.signal});}finally{clearTimeout(timer);}let out={};try{out=await response.json();}catch{}if(response.ok)return out;if(response.status<500&&response.status!==429)throw Object.assign(new Error(out.error||"제출을 확인해 주세요."),{nonRetryable:true});lastError=new Error(out.error||"서버 연결이 불안정합니다.");}catch(e){if(e.nonRetryable)throw e;lastError=e;}if(attempt<2){$("status").textContent="연결을 다시 시도하고 있어요... ("+(attempt+1)+"/2)";await sleep(600*Math.pow(2,attempt)+Math.floor(Math.random()*250));}}throw new Error("전송을 확인하지 못했습니다. 작성한 내용은 보관되어 있으니 잠시 후 다시 제출해 주세요.");}
 function show(id){["write","thanks","adminLogin","dashboard"].forEach(x=>$(x).classList.toggle("hidden",x!==id));$("adminToggle").classList.toggle("hidden",id==="dashboard"||id==="adminLogin");}
 function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 function setupQr(){const pageUrl=location.href.split("#")[0];$("qr").src="https://api.qrserver.com/v1/create-qr-code/?size=240x240&data="+encodeURIComponent(pageUrl);}
 $("send").onclick=async()=>{const answer1=$("a1").value.trim(),answer2=$("a2").value.trim();if(!answer1||!answer2){$("status").textContent="두 질문에 모두 답변해 주세요.";return;}
  const b=$("send");b.disabled=true;$("status").textContent="편지를 보내고 있어요...";
- try{await call("submit",{answer1,answer2});$("a1").value="";$("a2").value="";$("status").textContent="";show("thanks");}
+ try{let submissionKey;try{submissionKey=localStorage.getItem(SUBMISSION_KEY);if(!submissionKey){submissionKey=crypto.randomUUID();localStorage.setItem(SUBMISSION_KEY,submissionKey);}}catch{submissionKey=crypto.randomUUID();}await submitWithRetry({answer1,answer2,submissionKey});$("a1").value="";$("a2").value="";try{localStorage.removeItem(DRAFT_KEY);localStorage.removeItem(SUBMISSION_KEY);}catch{}$("status").textContent="";show("thanks");}
  catch(e){$("status").textContent=e.message;}finally{b.disabled=false;}};
 $("again").onclick=()=>show("write");
 $("adminToggle").onclick=()=>show("adminLogin");
 $("login").onclick=async()=>{const b=$("login");b.disabled=true;$("loginStatus").textContent="확인 중...";
  try{const out=await call("login",{password:$("pw").value});sessionStorage.setItem(KEY,out.token);$("pw").value="";show("dashboard");await refresh();}
  catch(e){$("loginStatus").textContent=e.message;}finally{b.disabled=false;}};
-async function refresh(){try{const out=await call("list",{},true);$("stats").textContent="총 "+out.letters.length+"통 · 추첨 완료 "+out.letters.filter(x=>x.drawn_at).length+"통 · 5초마다 자동 갱신";
+let refreshPending=false;
+async function refresh(){if(refreshPending)return;refreshPending=true;try{const out=await call("list",{},true);$("stats").textContent="총 "+out.letters.length+"통 · 추첨 완료 "+out.letters.filter(x=>x.drawn_at).length+"통 · 15초마다 자동 갱신";
  $("letters").innerHTML=out.letters.map(x=>'<article class="letter" data-letter-id="'+escapeHtml(x.id)+'"><small>'+new Date(x.created_at).toLocaleString("ko-KR")+(x.drawn_at?' · 추첨 완료':'')+'</small><p><b>1. 12월 개강을 준비하는 내가 변화해야 할 것은 무엇인가요?</b><br>'+escapeHtml(x.answer1)+'</p><p><b>2. 얼마 남지 않은 올해 나는 어떤 것을 소망하나요?</b><br>'+escapeHtml(x.answer2)+'</p><div class="letter-actions"><button class="delete-letter" data-delete-id="'+escapeHtml(x.id)+'">편지 삭제</button></div></article>').join("")||'<p class="intro">아직 도착한 편지가 없습니다.</p>';
- }catch(e){if(e.message.includes("인증")){sessionStorage.removeItem(KEY);show("adminLogin");}else $("stats").textContent=e.message;}}
+ }catch(e){if(e.message.includes("인증")){sessionStorage.removeItem(KEY);show("adminLogin");}else $("stats").textContent=e.message;}finally{refreshPending=false;}}
 const pipPositions={1:[5],2:[1,9],3:[1,5,9],4:[1,3,7,9],5:[1,3,5,7,9],6:[1,3,4,6,7,9]};
 $("diceCube").innerHTML=[1,2,3,4,5,6].map(n=>'<div class="dice-face"><div class="pips">'+pipPositions[n].map(p=>'<span class="pip" style="grid-area:'+Math.ceil(p/3)+' / '+((p-1)%3+1)+'"></span>').join('')+'</div></div>').join('');
 let previousFocus=null;
@@ -78,6 +86,8 @@ $("draw").onclick=async()=>{const b=$("draw"),dice=$("dice");b.disabled=true;b.t
 $("letters").addEventListener("click",async event=>{const button=event.target.closest("[data-delete-id]");if(!button)return;const id=button.dataset.deleteId;if(!confirm("이 편지를 영구 삭제할까요? 삭제한 편지는 복구할 수 없습니다."))return;button.disabled=true;try{await call("delete",{id},true);await refresh();}catch(e){alert(e.message);button.disabled=false;}});
 $("logout").onclick=async()=>{try{await call("logout",{},true);}catch{}sessionStorage.removeItem(KEY);closeResult();show("write");};
 setupQr();
-if(token()){show("dashboard");refresh();setInterval(()=>{if(token()&&!$("dashboard").classList.contains("hidden"))refresh();},5000);}
+if(token()){show("dashboard");refresh();}
+setInterval(()=>{if(!document.hidden&&token()&&!$("dashboard").classList.contains("hidden")&&$("resultOverlay").classList.contains("hidden"))refresh();},15000);
+document.addEventListener("visibilitychange",()=>{if(!document.hidden&&token()&&!$("dashboard").classList.contains("hidden"))refresh();});
 </script>
 </body></html>
