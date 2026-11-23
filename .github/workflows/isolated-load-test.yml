@@ -1,0 +1,25 @@
+name: Isolated Supabase load test
+on:
+  push:
+    paths:
+      - .github/workflows/isolated-load-test.yml
+  workflow_dispatch:
+
+jobs:
+  isolated-load-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify isolated test target
+        env:
+          PROJECT_REF: fkimiznppalqymqeofhw
+        run: |
+          test "$PROJECT_REF" != "cjzwbnjqchtlguqwdlfo"
+          curl --fail --silent --show-error --max-time 20 "https://${PROJECT_REF}.supabase.co/functions/v1/dear-myself"
+      - name: Run 50, 100, 150, 200 concurrent submissions
+        run: |
+          docker run --rm --network host -v "$PWD:/work:ro" \
+            -e LOAD_TEST_PROJECT_REF=fkimiznppalqymqeofhw \
+            -e LOAD_TEST_API_URL=https://fkimiznppalqymqeofhw.supabase.co/functions/v1/dear-myself \
+            grafana/k6:0.54.0 run /work/tests/load/submit.js
